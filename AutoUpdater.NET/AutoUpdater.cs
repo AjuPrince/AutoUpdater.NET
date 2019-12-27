@@ -101,6 +101,16 @@ namespace AutoUpdaterDotNET
         public static String AppCastURL;
 
         /// <summary>
+        /// 是否本地构建的Xml文档
+        /// </summary>
+        public static bool IsLocalXmlDocment = false;
+
+        /// <summary>
+        /// Xml文档
+        /// </summary>
+        public static string StrXml;
+
+        /// <summary>
         /// Login/password/domain for FTP-request
         /// </summary>
         public static NetworkCredential FtpCredentials;
@@ -129,7 +139,7 @@ namespace AutoUpdaterDotNET
         ///     Set the User-Agent string to be used for HTTP web requests.
         /// </summary>
         public static string HttpUserAgent;
-        
+
         /// <summary>
         ///     If this is true users can see the skip button.
         /// </summary>
@@ -248,10 +258,10 @@ namespace AutoUpdaterDotNET
         {
             try
             {
-                ServicePointManager.SecurityProtocol |= (SecurityProtocolType) 192 |
-                                                        (SecurityProtocolType) 768 | (SecurityProtocolType) 3072;
+                ServicePointManager.SecurityProtocol |= (SecurityProtocolType)192 |
+                                                        (SecurityProtocolType)768 | (SecurityProtocolType)3072;
             }
-            catch (NotSupportedException) {}
+            catch (NotSupportedException) { }
 
             if (Mandatory && _remindLaterTimer != null)
             {
@@ -285,7 +295,7 @@ namespace AutoUpdaterDotNET
             {
                 if (runWorkerCompletedEventArgs.Result is DateTime)
                 {
-                    SetTimer((DateTime) runWorkerCompletedEventArgs.Result);
+                    SetTimer((DateTime)runWorkerCompletedEventArgs.Result);
                 }
                 else
                 {
@@ -377,11 +387,11 @@ namespace AutoUpdaterDotNET
             Assembly mainAssembly = e.Argument as Assembly;
 
             var companyAttribute =
-                (AssemblyCompanyAttribute) GetAttribute(mainAssembly, typeof(AssemblyCompanyAttribute));
+                (AssemblyCompanyAttribute)GetAttribute(mainAssembly, typeof(AssemblyCompanyAttribute));
             if (string.IsNullOrEmpty(AppTitle))
             {
                 var titleAttribute =
-                    (AssemblyTitleAttribute) GetAttribute(mainAssembly, typeof(AssemblyTitleAttribute));
+                    (AssemblyTitleAttribute)GetAttribute(mainAssembly, typeof(AssemblyTitleAttribute));
                 AppTitle = titleAttribute != null ? titleAttribute.Title : mainAssembly.GetName().Name;
             }
 
@@ -392,180 +402,270 @@ namespace AutoUpdaterDotNET
                 : $@"Software\{AppTitle}\AutoUpdater";
 
             InstalledVersion = mainAssembly.GetName().Version;
-
-            WebRequest webRequest = WebRequest.Create(AppCastURL);
-
-            webRequest.CachePolicy = new RequestCachePolicy(RequestCacheLevel.NoCacheNoStore);
-
-            if (Proxy != null)
+            UpdateInfoEventArgs args = new UpdateInfoEventArgs();
+            if (IsLocalXmlDocment)//是否本地Xml文档
             {
-                webRequest.Proxy = Proxy;
-            }
-
-            var uri = new Uri(AppCastURL);
-
-            WebResponse webResponse;
-
-            try
-            {
-                if (uri.Scheme.Equals(Uri.UriSchemeFtp))
+                XmlDocument receivedAppCastDocument = new XmlDocument { XmlResolver = null };
+                try
                 {
-                    var ftpWebRequest = (FtpWebRequest) webRequest;
-                    ftpWebRequest.Credentials = FtpCredentials;
-                    ftpWebRequest.UseBinary = true;
-                    ftpWebRequest.UsePassive = true;
-                    ftpWebRequest.KeepAlive = true;
-                    ftpWebRequest.Method = WebRequestMethods.Ftp.DownloadFile;
+                    receivedAppCastDocument.LoadXml(StrXml);
 
-                    webResponse = ftpWebRequest.GetResponse();
-                }
-                else if(uri.Scheme.Equals(Uri.UriSchemeHttp) || uri.Scheme.Equals(Uri.UriSchemeHttps))
-                {
-                    HttpWebRequest httpWebRequest = (HttpWebRequest) webRequest;
+                    XmlNodeList appCastItems = receivedAppCastDocument.SelectNodes("item");
 
-                    httpWebRequest.UserAgent = GetUserAgent();
-
-                    if (BasicAuthXML != null)
+                    if (appCastItems != null)
                     {
-                        httpWebRequest.Headers[HttpRequestHeader.Authorization] = BasicAuthXML.ToString();
-                    }
-
-                    webResponse = httpWebRequest.GetResponse();
-                }
-                else
-                {
-                    webResponse = webRequest.GetResponse(); 
-                }
-            }
-            catch (Exception exception)
-            {
-                Debug.WriteLine(exception);
-                e.Cancel = false;
-                return;
-            }
-
-            UpdateInfoEventArgs args;
-
-            using (Stream appCastStream = webResponse.GetResponseStream())
-            {
-                if (appCastStream != null)
-                {
-                    if (ParseUpdateInfoEvent != null)
-                    {
-                        using (StreamReader streamReader = new StreamReader(appCastStream))
+                        foreach (XmlNode item in appCastItems)
                         {
-                            string data = streamReader.ReadToEnd();
-                            ParseUpdateInfoEventArgs parseArgs = new ParseUpdateInfoEventArgs(data);
-                            ParseUpdateInfoEvent(parseArgs);
-                            args = parseArgs.UpdateInfo;
+                            XmlNode appCastVersion = item.SelectSingleNode("version");
+
+                            try
+                            {
+                                CurrentVersion = new Version(appCastVersion?.InnerText);
+                            }
+                            catch (Exception)
+                            {
+                                CurrentVersion = null;
+                            }
+
+                            args.CurrentVersion = CurrentVersion;
+
+                            XmlNode appCastChangeLog = item.SelectSingleNode("changelog");
+
+                            args.ChangelogURL = appCastChangeLog?.InnerText;
+
+                            XmlNode appCastUrl = item.SelectSingleNode("url");
+
+                            args.DownloadURL = appCastUrl?.InnerText;
+
+                            if (Mandatory.Equals(false))
+                            {
+                                XmlNode mandatory = item.SelectSingleNode("mandatory");
+
+                                Boolean.TryParse(mandatory?.InnerText, out Mandatory);
+
+                                string mode = mandatory?.Attributes["mode"]?.InnerText;
+
+                                if (!string.IsNullOrEmpty(mode))
+                                {
+                                    UpdateMode = (Mode)Enum.Parse(typeof(Mode), mode);
+                                    if (ReportErrors && !Enum.IsDefined(typeof(Mode), UpdateMode))
+                                    {
+                                        throw new InvalidDataException(
+                                            $"{UpdateMode} is not an underlying value of the Mode enumeration.");
+                                    }
+                                }
+                            }
+
+                            args.Mandatory = Mandatory;
+                            args.UpdateMode = UpdateMode;
+
+                            XmlNode appArgs = item.SelectSingleNode("args");
+
+                            args.InstallerArgs = appArgs?.InnerText;
+
+                            XmlNode checksum = item.SelectSingleNode("checksum");
+
+                            args.HashingAlgorithm = checksum?.Attributes["algorithm"]?.InnerText;
+
+                            args.Checksum = checksum?.InnerText;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    e.Cancel = false;
+                    return;
+                }
+
+                if (args.CurrentVersion == null || string.IsNullOrEmpty(args.DownloadURL))
+                {
+                    if (ReportErrors)
+                    {
+                        throw new InvalidDataException();
+                    }
+                    return;
+                }
+
+                CurrentVersion = args.CurrentVersion;
+                ChangelogURL = args.ChangelogURL;
+                DownloadURL = args.DownloadURL;
+                InstallerArgs = args.InstallerArgs ?? String.Empty;
+                HashingAlgorithm = args.HashingAlgorithm ?? "MD5";
+                Checksum = args.Checksum ?? String.Empty;
+            }
+            else//网络
+            {
+                WebRequest webRequest = WebRequest.Create(AppCastURL);
+
+                webRequest.CachePolicy = new RequestCachePolicy(RequestCacheLevel.NoCacheNoStore);
+
+                if (Proxy != null)
+                {
+                    webRequest.Proxy = Proxy;
+                }
+
+                var uri = new Uri(AppCastURL);
+
+                WebResponse webResponse;
+
+                try
+                {
+                    if (uri.Scheme.Equals(Uri.UriSchemeFtp))
+                    {
+                        var ftpWebRequest = (FtpWebRequest)webRequest;
+                        ftpWebRequest.Credentials = FtpCredentials;
+                        ftpWebRequest.UseBinary = true;
+                        ftpWebRequest.UsePassive = true;
+                        ftpWebRequest.KeepAlive = true;
+                        ftpWebRequest.Method = WebRequestMethods.Ftp.DownloadFile;
+
+                        webResponse = ftpWebRequest.GetResponse();
+                    }
+                    else if (uri.Scheme.Equals(Uri.UriSchemeHttp) || uri.Scheme.Equals(Uri.UriSchemeHttps))
+                    {
+                        HttpWebRequest httpWebRequest = (HttpWebRequest)webRequest;
+
+                        httpWebRequest.UserAgent = GetUserAgent();
+
+                        if (BasicAuthXML != null)
+                        {
+                            httpWebRequest.Headers[HttpRequestHeader.Authorization] = BasicAuthXML.ToString();
+                        }
+
+                        webResponse = httpWebRequest.GetResponse();
+                    }
+                    else
+                    {
+                        webResponse = webRequest.GetResponse();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Debug.WriteLine(exception);
+                    e.Cancel = false;
+                    return;
+                }
+
+
+
+                using (Stream appCastStream = webResponse.GetResponseStream())
+                {
+                    if (appCastStream != null)
+                    {
+                        if (ParseUpdateInfoEvent != null)
+                        {
+                            using (StreamReader streamReader = new StreamReader(appCastStream))
+                            {
+                                string data = streamReader.ReadToEnd();
+                                ParseUpdateInfoEventArgs parseArgs = new ParseUpdateInfoEventArgs(data);
+                                ParseUpdateInfoEvent(parseArgs);
+                                args = parseArgs.UpdateInfo;
+                            }
+                        }
+                        else
+                        {
+                            XmlDocument receivedAppCastDocument = new XmlDocument { XmlResolver = null };
+                            try
+                            {
+                                receivedAppCastDocument.Load(appCastStream);
+
+                                XmlNodeList appCastItems = receivedAppCastDocument.SelectNodes("item");
+
+                                if (appCastItems != null)
+                                {
+                                    foreach (XmlNode item in appCastItems)
+                                    {
+                                        XmlNode appCastVersion = item.SelectSingleNode("version");
+
+                                        try
+                                        {
+                                            CurrentVersion = new Version(appCastVersion?.InnerText);
+                                        }
+                                        catch (Exception)
+                                        {
+                                            CurrentVersion = null;
+                                        }
+
+                                        args.CurrentVersion = CurrentVersion;
+
+                                        XmlNode appCastChangeLog = item.SelectSingleNode("changelog");
+
+                                        args.ChangelogURL = appCastChangeLog?.InnerText;
+
+                                        XmlNode appCastUrl = item.SelectSingleNode("url");
+
+                                        args.DownloadURL = appCastUrl?.InnerText;
+
+                                        if (Mandatory.Equals(false))
+                                        {
+                                            XmlNode mandatory = item.SelectSingleNode("mandatory");
+
+                                            Boolean.TryParse(mandatory?.InnerText, out Mandatory);
+
+                                            string mode = mandatory?.Attributes["mode"]?.InnerText;
+
+                                            if (!string.IsNullOrEmpty(mode))
+                                            {
+                                                UpdateMode = (Mode)Enum.Parse(typeof(Mode), mode);
+                                                if (ReportErrors && !Enum.IsDefined(typeof(Mode), UpdateMode))
+                                                {
+                                                    throw new InvalidDataException(
+                                                        $"{UpdateMode} is not an underlying value of the Mode enumeration.");
+                                                }
+                                            }
+                                        }
+
+                                        args.Mandatory = Mandatory;
+                                        args.UpdateMode = UpdateMode;
+
+                                        XmlNode appArgs = item.SelectSingleNode("args");
+
+                                        args.InstallerArgs = appArgs?.InnerText;
+
+                                        XmlNode checksum = item.SelectSingleNode("checksum");
+
+                                        args.HashingAlgorithm = checksum?.Attributes["algorithm"]?.InnerText;
+
+                                        args.Checksum = checksum?.InnerText;
+                                    }
+                                }
+                            }
+                            catch (Exception)
+                            {
+                                e.Cancel = false;
+                                webResponse.Close();
+                                return;
+                            }
                         }
                     }
                     else
                     {
-                        XmlDocument receivedAppCastDocument = new XmlDocument {XmlResolver = null};
-                        try
-                        {
-                            receivedAppCastDocument.Load(appCastStream);
-
-                            XmlNodeList appCastItems = receivedAppCastDocument.SelectNodes("item");
-
-                            args = new UpdateInfoEventArgs();
-
-                            if (appCastItems != null)
-                            {
-                                foreach (XmlNode item in appCastItems)
-                                {
-                                    XmlNode appCastVersion = item.SelectSingleNode("version");
-
-                                    try
-                                    {
-                                        CurrentVersion = new Version(appCastVersion?.InnerText);
-                                    }
-                                    catch (Exception)
-                                    {
-                                        CurrentVersion = null;
-                                    }
-
-                                    args.CurrentVersion = CurrentVersion;
-
-                                    XmlNode appCastChangeLog = item.SelectSingleNode("changelog");
-
-                                    args.ChangelogURL = appCastChangeLog?.InnerText;
-
-                                    XmlNode appCastUrl = item.SelectSingleNode("url");
-
-                                    args.DownloadURL = appCastUrl?.InnerText;
-
-                                    if (Mandatory.Equals(false))
-                                    {
-                                        XmlNode mandatory = item.SelectSingleNode("mandatory");
-
-                                        Boolean.TryParse(mandatory?.InnerText, out Mandatory);
-
-                                        string mode = mandatory?.Attributes["mode"]?.InnerText;
-
-                                        if (!string.IsNullOrEmpty(mode))
-                                        {
-                                            UpdateMode = (Mode) Enum.Parse(typeof(Mode), mode);
-                                            if (ReportErrors && !Enum.IsDefined(typeof(Mode), UpdateMode))
-                                            {
-                                                throw new InvalidDataException(
-                                                    $"{UpdateMode} is not an underlying value of the Mode enumeration.");
-                                            }
-                                        }
-                                    }
-
-                                    args.Mandatory = Mandatory;
-                                    args.UpdateMode = UpdateMode;
-
-                                    XmlNode appArgs = item.SelectSingleNode("args");
-
-                                    args.InstallerArgs = appArgs?.InnerText;
-
-                                    XmlNode checksum = item.SelectSingleNode("checksum");
-
-                                    args.HashingAlgorithm = checksum?.Attributes["algorithm"]?.InnerText;
-
-                                    args.Checksum = checksum?.InnerText;
-                                }
-                            }
-                        }
-                        catch (Exception)
-                        {
-                            e.Cancel = false;
-                            webResponse.Close();
-                            return;
-                        }
+                        e.Cancel = false;
+                        webResponse.Close();
+                        return;
                     }
                 }
-                else
+
+                if (args.CurrentVersion == null || string.IsNullOrEmpty(args.DownloadURL))
                 {
-                    e.Cancel = false;
                     webResponse.Close();
+                    if (ReportErrors)
+                    {
+                        throw new InvalidDataException();
+                    }
+
                     return;
                 }
-            }
 
-            if (args.CurrentVersion == null || string.IsNullOrEmpty(args.DownloadURL))
-            {
+                CurrentVersion = args.CurrentVersion;
+                ChangelogURL = args.ChangelogURL = GetURL(webResponse.ResponseUri, args.ChangelogURL);
+                DownloadURL = args.DownloadURL = GetURL(webResponse.ResponseUri, args.DownloadURL);
+                InstallerArgs = args.InstallerArgs ?? String.Empty;
+                HashingAlgorithm = args.HashingAlgorithm ?? "MD5";
+                Checksum = args.Checksum ?? String.Empty;
+
                 webResponse.Close();
-                if (ReportErrors)
-                {
-                    throw new InvalidDataException();
-                }
-
-                return;
             }
-
-            CurrentVersion = args.CurrentVersion;
-            ChangelogURL = args.ChangelogURL = GetURL(webResponse.ResponseUri, args.ChangelogURL);
-            DownloadURL = args.DownloadURL = GetURL(webResponse.ResponseUri, args.DownloadURL);
-            InstallerArgs = args.InstallerArgs ?? String.Empty;
-            HashingAlgorithm = args.HashingAlgorithm ?? "MD5";
-            Checksum = args.Checksum ?? String.Empty;
-
-            webResponse.Close();
-
             if (Mandatory)
             {
                 ShowRemindLaterButton = false;
@@ -672,7 +772,7 @@ namespace AutoUpdaterDotNET
                     {
                         if (process.CloseMainWindow())
                         {
-                            process.WaitForExit((int) TimeSpan.FromSeconds(10)
+                            process.WaitForExit((int)TimeSpan.FromSeconds(10)
                                 .TotalMilliseconds); //give some time to process message
                         }
 
@@ -710,7 +810,7 @@ namespace AutoUpdaterDotNET
                 return null;
             }
 
-            return (Attribute) attributes[0];
+            return (Attribute)attributes[0];
         }
 
         internal static string GetUserAgent()
@@ -726,7 +826,7 @@ namespace AutoUpdaterDotNET
 
             _remindLaterTimer = new System.Timers.Timer
             {
-                Interval = (int) timeSpan.TotalMilliseconds,
+                Interval = (int)timeSpan.TotalMilliseconds,
                 AutoReset = false
             };
 
@@ -764,7 +864,7 @@ namespace AutoUpdaterDotNET
             {
                 return downloadDialog.ShowDialog().Equals(DialogResult.OK);
             }
-            catch (TargetInvocationException)
+            catch (TargetInvocationException ex)
             {
             }
 
